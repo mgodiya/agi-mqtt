@@ -3,61 +3,68 @@
 #
 # Usage:
 # AGI(/etc/asterisk/agi/mqtt,/etc/asterisk/agi/mqtt.cfg,calls/missed)
-# or, to override the extension:
-# AGI(/etc/asterisk/agi/mqtt,/etc/asterisk/agi/mqtt.cfg,calls/missed,+43123456789)
 #
+
 
 import sys
 from ConfigParser import ConfigParser
-import mosquitto
-import json
+import paho.mqtt.client as paho
+import json, time, ssl
+from asterisk.agi import *
 
 conffile, topic = sys.argv[1:3]
-
 config = ConfigParser()
 config.add_section('mqtt')
-# set defaults for anonymous auth
 config.set('mqtt', 'username', '')
 config.set('mqtt', 'password', '')
 config.set('mqtt', 'port', '1883')
 config.read(conffile)
-
 mqtt_server = config.get('mqtt', 'server')
 mqtt_port = config.getint('mqtt', 'port')
 mqtt_username = config.get('mqtt', 'username')
 mqtt_password = config.get('mqtt', 'password')
 
-agi = []
-while 1:
-    line = sys.stdin.readline()
-    if not line or line == "\n":
-        break
-    agi.append(line)
+#Defining callbacks
 
-agi = dict([line.rstrip('\n').replace('agi_', '', 1).split(': ', 1) for line in agi])
+def on_message(client, userdata, message):
+	print("received message =",str(message.payload.decode("utf-8")))
 
-if len(sys.argv) > 3:
-    agi['extension'] = sys.argv[3]
+def on_log(client, userdata, level, buf):
+	print("log: ",buf)
+
+def on_connect(client, userdata,flags,rc):
+	print("connected")
+
+def on_publish(client, userdata,flags,rc):
+	print("publishing")
+
+def publish(topic, message, waitForAck = False):
+	mid = client.publish(topic, message, 2)[1]
+	if (waitForAck):
+		while mid not in receivedMessages:
+		time.sleep(0.25)
 
 def agi_exit(rc, *args):
-    if rc != 0:
-        print "VERBOSE rc=%s %s" % (rc, args)
-    sys.exit(rc)
+	if rc != 0:
+		print "VERBOSE rc=%s %s" % (rc, args)
+		sys.exit(rc)
 
-def on_connect(mosq, rc, *args):
-    if rc != 0:
-        agi_exit(1, "Connection failed: %d" % rc)
+#creating client and registering callbacks
+client=paho.Client()
+client.on_message=on_message
+client.on_log=on_log
+client.on_connect=on_connect
+client.op_publish=on_publish
+#initializing AGI and getting callerID of incoming caller
+agi = AGI()
+callerId = agi.env['agi_callerid']
+print("connecting to broker")
 
-def on_publish(mosq, *args):
-    # done
-    agi_exit(0)
+#uncomment if using MQTT over SSL
+#client.tls_set(cert_reqs=ssl.CERT_REQUIRED, tls_version=ssl.PROTOCOL_TLSv1_2)
+#client.tls_insecure_set(True)
 
-client = mosquitto.Mosquitto('agi')
 client.username_pw_set(mqtt_username, mqtt_password)
 client.connect(mqtt_server, port=mqtt_port)
-client.on_connect = on_connect
-client.on_publish = on_publish
-
-client.publish(topic, payload=json.dumps(agi))
-client.loop()
+client.publish(topic,callerId)
 agi_exit(1, "Message publish timed out")
